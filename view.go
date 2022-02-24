@@ -685,7 +685,9 @@ func ( this *counter ) Decrement(){
 func GetEvent()*Event{
 	return event
 }
-
+func DePrueba(){
+	
+}
 
 
 
