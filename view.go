@@ -1,4 +1,4 @@
-package view
+package pro
 
 import (
 	"encoding/json"
@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -24,26 +23,20 @@ var(
 	conection bool = false
 	done bool = false
 	methods []method
-	windowRef []Element
-	windowLoad = false
-	event *Event
+	Event *Events
+	Dom []*Element
+	document *Element = &Element{
+		TagName: "document",
+	}
+	childsApp []*Component
+	tags string = "img,section,div,h1,h2,h3,h4,h5,h6,input,label,button,body,comp"
 )
 // types
 type method struct{
    name string
    function func()
 }
-type Element struct {
-   Ref string `json:"ref"`
-   Id string `json:"id"`
-   ClassName string `json:"className"`
-   InnerHTML string `json:"innerHTML"`
-   TagName string `json:"tagName"`
-   ParentNode string `json:"parentNode"`
-   Children string	`json:"children"`
-   Value string	`json:"value"`
-   Position int
-}
+
 type smsJsons struct{
    Type string `json:"type"`
    Ref string `json:"ref"`
@@ -54,15 +47,31 @@ type smsJsons struct{
    Name string `json:"name"`
 }
 type Component struct{
-	Name string 
-	Render string 
-	Style string
+	name string 
+	Model func()string
+	Style func()string
 	Action func()
-	Childrens []*Component
 }
-type Event struct{
+type Element struct {
+	ref int
+	TagName    string
+	innerHtml  string
+	OuterHtml  string
+	Value      string
+	ClassName string
+	Id      string
+	Name string
+	ParentNode *Element
+	Children   []*Element
+}
+type Events struct{
 	Type string `json:"type"`
-	Target string `json:"target"`
+	Value string `json:"value"`
+	Ref string `json:"ref"`
+}
+type Attrs struct{
+	Type string
+	Value string
 }
 // utils 
 func Error(err error){
@@ -80,7 +89,7 @@ func ToFirstUpperCase(str string)string{
 // eventos
 func onWindowLoad(call func()){
 	for{
-		if windowLoad{
+		if conection{
 			call()
 			return 
 		}
@@ -136,10 +145,6 @@ func js() string{
 			isEval( data )
 			return 
 		}
-		if ( data.type == "window" ){
-			isWindow( data )
-			return 
-		}
 	}
 
 	function isBind( data ){
@@ -148,7 +153,8 @@ func js() string{
 			if ( event.type != "dragstart"){
 				event.preventDefault()
 			}
-			ws.send( JSON.stringify({type:"event", name:data.name ,event:JSON.stringify({type:event.type,target:event.target.id})}) )
+			console.log(event.target.value)
+			ws.send( JSON.stringify({type:"event", name:data.name ,event:JSON.stringify({type:event.type,ref:event.target.getAttribute('key'),value:event.target.value})}) )
 		}
 	}
 
@@ -167,18 +173,6 @@ func js() string{
 		}
 	}
 
-	function isWindow( data ){
-
-		let res = eval( data.js )
-
-		res.forEach(item=>{
-			if ( item.tagName != "SCRIPT" && item.tagName != "BODY" && item.tagName != "STYLE"){
-				uploadValue( item )
-			}
-			ws.send( JSON.stringify( {type:"window", ref:item.ref , field :(res.length-1).toString() ,body:JSON.stringify(item)} )
-		)
-		})
-	}
 
 	window.addEventListener('beforeunload', (e)=>{
 		e.preventDefault()
@@ -194,77 +188,56 @@ func js() string{
 				ws.send(JSON.stringify({type:"upload", Ref:data.ref , value : res.value , body :JSON.stringify(res)}))
 		})
 	}
-
-	window.getElements = ()=>{
-
-			let win = document.body.querySelectorAll("*")
-			const attrs = ["ref","id","className","innerHTML","tagName","parentNode","value"]
-			
-			win = Array.from( win ).map(( item , index )=>{
-				item.classList.add( "socket_"+ index )
-			    let obj ={}
-			    for (let i in item ){
-			        attrs.forEach(att =>{
-			            if ( att == i ){
-			                if (i == "parentNode"){
-			                    obj[i] = JSON.stringify({tagName : item[i].tagName , id : item[i].id , class: item[i].className})
-			                }else{
-			                    obj[i] = item[i]
-			                }
-			            }
-			        })
-			    }
-			    obj["ref"] = "socket_"+ index
-			    return obj
-			})
-			return win
-	}
 	</script>
 	`
 	return js
 }
 func New(browser string, title string, content Component){
 
-	if title != ""{
-		content.Render = strings.Replace(content.Render,"<html>","<html><title>"+ title +"</title>", 1)
+
+	app := NewElementL(Build(content.Model()))
+
+	if !strings.Contains(app.OuterHtml,"<html>") || !strings.Contains(app.OuterHtml,"<body>"){
+		app.OuterHtml = `<html><body>`+ app.OuterHtml +`</html></body>`
 	}
-	if content.Style != ""{
-		content.Render = Build(content)
-		content.Render = strings.Replace( content.Render,"<body>","<body><style>"+ content.Style +"</style>", 1)
-		if len(content.Childrens) > 0 {
-			for _, child := range content.Childrens{
-				content.Render = strings.Replace(content.Render,"</style>",child.Style + "</style>",1)
+	if title != ""{
+		app.OuterHtml = strings.Replace(app.OuterHtml,"<html>","<html><title>"+ title +"</title>", 1)
+	}
+	if content.Style() != ""{
+		app.OuterHtml = strings.Replace( app.OuterHtml,"<body>","<body><style>"+ content.Style() +"</style>", 1)
+		if len(childsApp) > 0 {
+			for _, child := range childsApp {
+				app.OuterHtml = strings.Replace(app.OuterHtml,"</style>",child.Style() + "</style>",1)
 			}
 		}
 	}
 	// inyect js
-	content.Render = strings.Replace(content.Render,"<body>" , "<body>"+ js() , 1)
-	contenido = content.Render
+	app.OuterHtml = strings.Replace(app.OuterHtml,"<body>" , "<body>"+ js() , 1)
+	contenido = app.OuterHtml
 
 	if runtime.GOOS == "windows" {
 		isWindows("chrome")
 	}
 	// start server and window
 	go newServer()
-	// obtengo elementos del objeto window
-	getWindow()
 	go onWindowLoad(func(){
 		// ejecutar action de todos los componentes
 		content.Action()
-		for _, child := range content.Childrens{
+		for _, child := range childsApp{
 			child.Action()
 		}
 	})
 }
 // building html con componentes 
-func Build( ele Component )string{
-	for _, child := range ele.Childrens{
-		if strings.Contains(ele.Render,"</"+child.Name+">"){
-			ele.Render = strings.Replace(ele.Render,"</"+child.Name+">",child.Render,1)
+func Build( ele string )string{
+	
+	for _, child := range childsApp{
+		if strings.Contains(ele,"</"+child.name+">"){
+			ele = strings.Replace(ele,"</"+child.name+">",child.Model(),1)
 		}
 	}
-	//fmt.Println(ele.Render)
-	return ele.Render
+	//fmt.Println(ele.Model)
+	return ele
 }
 // comunication
 func send( sms string ){
@@ -281,28 +254,6 @@ func send( sms string ){
 	}
 }
 func upload(s string ){
-
-	var obj smsJsons
-	var ele Element
-
-	err := json.Unmarshal([]byte( s ),&obj)
-		Error( err )
-	err = json.Unmarshal([]byte( obj.Body ),&ele)
-		Error( err )
-	ele.Ref = obj.Ref
-
-	
-		for  i , e := range windowRef{
-			if e.Ref == ele.Ref {
-				windowRef[i] = ele
-				windowRef[i].Position = i
-			}
-		}	
-}
-// obtener referencia de windowJs
-func getWindow(){
-	js := `{"type":"window","js": "getElements()"}`
-	eval( js )
 }
 // functions server 
 func reciver(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +281,7 @@ func AddMethod( name string , f func()){
 func evalMethods( sms string )bool{
 	var Json smsJsons
 	json.Unmarshal([]byte(sms), &Json)
-	json.Unmarshal([]byte(Json.Event),&event)
+	json.Unmarshal([]byte(Json.Event),&Event)
 	for _,v := range methods{
 		if v.name == Json.Name {
 			v.function()
@@ -354,10 +305,6 @@ func evalOptions(sms string){
 		upload( sms )
 		return
 	}
-	if strings.Contains( sms , "window"){
-		window( sms )
-		return
-	}
 	evalMethods(sms)
 }
 func ok(){
@@ -366,24 +313,6 @@ func ok(){
 }
 func close( sms string ){
 	done = true
-}
-func window( sms string ){
-
-	var smsJson smsJsons 
-	var window Element
-
-	err := json.Unmarshal([]byte(sms),&smsJson)
-		Error( err )
-	err = json.Unmarshal([]byte(smsJson.Body),&window)
-		Error( err )
-
-	windowRef = append( windowRef , window )
-	length ,_ := strconv.Atoi(smsJson.Field)
-
-	if len(windowRef) == length {
-		windowLoad = true
-		Log("window is ok!")
-	}
 }
 // bind js
 func Bind(name string , f func()){
@@ -406,12 +335,13 @@ func getBoince()string{
 }
 // methods ui
 func getNameComponent(str string )string {
+
 	res := strings.Index(str,"class")
 	if res != -1 {
 		str = str[res:res+20]
 		str = strings.Split(str,"=")[1]
-		str = strings.Replace(str, `"`,"",1)
-		res:= strings.Index(str,`"`)
+		str = strings.Replace(str, `'`,"",1)
+		res:= strings.Index(str,`'`)
 		str = str[:res]
 		str = strings.TrimSpace(str)
 		str = ToFirstUpperCase(str)
@@ -421,276 +351,360 @@ func getNameComponent(str string )string {
 	}
 	return str
 }
-func AddChilds(childs ...*Component)[]*Component{
+func AddChilds(childs ...*Component){
 	for i,v :=range childs{
 		
-		childs[i].Name = getNameComponent(v.Render)
+		childs[i].name = getNameComponent(v.Model())
 
 	}
-	return childs
+	childsApp = append(childsApp,childs...)
 }
-// methos js 
-func Selector( query string )(res *Element){
+// utils
+func Clean(s string)string{
+	res := strings.ReplaceAll(strings.ReplaceAll(s , "\t",""),"\n","")
+	if strings.Contains(res ,"> <"){
+		res = strings.ReplaceAll(res ,"> <","><")
+	}
+	return res
+}
+func (p *Element) uploadInners(){
+	parent := p
+	for{
+		if parent.ParentNode != nil{
+			parent = parent.ParentNode
+			parent.innerHtml = ""
+			endCabecera := strings.Index(parent.OuterHtml,">")
+			open := parent.OuterHtml[:endCabecera+1]
+			close := "</"+ parent.TagName + ">"
+			for _, v := range parent.Children{
+				parent.innerHtml += v.OuterHtml
+			}
+			parent.OuterHtml = open + parent.innerHtml + close
+		}else{ break }
+	}
+}
+// instanciate
+func NewElement(t string) (e *Element) {
+	
+		var element Element = Element{
+			TagName:   t,
+			OuterHtml: "<"+ t +" key='"+ fmt.Sprint(len(Dom))+"'></"+ t +">",
+			ref:len(Dom),
+		}
+		Dom = append(Dom,&element)
+		e = &element
 
-	for i , v := range windowRef{
-		if strings.ToLower(v.TagName) == query || strings.Contains( v.ClassName , strings.Replace(query,".","",1) )  || "#"+v.Id == query{
-			res =  &windowRef[i]
-			return 
+	if !strings.Contains(tags,t){
+		log.Panic("\033[0;49;33m","Syntax error , tagName no permitted change to  >>","\033[5;49;31m",tags,"\033[;0m")
+	}
+	return
+}
+func NewElementL(html string)(*Element){
+
+	var id string
+	var className string
+	var name string
+	var tagName string
+	var value string
+	var innerHtml string
+	var ref int
+
+	ref = len(Dom)
+
+	html = pushKey(html, ref )	
+	html = Clean(html)
+
+	i := strings.Index(html, "<")
+	i2 := strings.Index(html, ">")
+	iTag := strings.Index(html, " ")
+	if i > iTag || iTag > i2  {
+		iTag = i2
+	}
+	open := html[i:i2+1]
+	tagName = html[i+1:iTag]
+	attrs := getAttribute(html[iTag:i2])
+	//attrs := strings.Split(html[iTag:i2]," ")
+	// obtener innerHtml descartando tags del mismo tipo dentro del elemento
+	innerHtml = html[i2+1:]
+	tagEnd := "</"+ tagName + ">"
+	tagInit := "<"+ tagName 
+	end := strings.Index(innerHtml,tagEnd)
+	init := strings.Index(innerHtml,tagInit)
+	iClose := 0
+	iTemp := 0
+
+	for strings.Contains(innerHtml,tagEnd) {
+			iTemp = strings.Index(innerHtml,tagEnd)+len(tagEnd)
+			iClose += iTemp
+			innerHtml = innerHtml[iTemp:]
+			if init > end{
+				break
+			}
+	}
+	//fmt.Println("tagname:",tagName)
+	//fmt.Println("attrs:",attrs)
+	//fmt.Println(len(attrs))
+	//fmt.Println("inner:",innerHtml)
+	innerInit := i2+1
+	innerEnd := iClose+i2+1-len(tagEnd)
+	if innerInit > innerEnd{
+		log.Panic("\033[0;49;33m","Syntax error in >> ","\033[5;49;31m",Dom[len(Dom)-1],"\033[;0m")
+	}
+	innerHtml = html[innerInit:innerEnd]
+
+	// fin de obtencion
+	for _,v := range attrs {
+		if strings.Contains(v , "id"){
+			id = strings.ReplaceAll(v," ","")[4:len(v)-1]
+		}
+		if strings.Contains(v , "class"){
+			className = strings.ReplaceAll(v," ","")[7:len(v)-1]
+		}
+		if strings.Contains(v , "name"){
+			name = strings.ReplaceAll(v," ","")[6:len(v)-1]
+		}
+		if strings.Contains(v,"value"){
+			value = strings.ReplaceAll(v," ","")[7:len(v)-1]
 		}
 	}
-	null := Element{ClassName: "<nil>"}
-	res = &null
+
+	ele := NewElement(tagName)
+
+	ele.Id = id
+	ele.ClassName = className
+	ele.Name = name
+	ele.Value = value
+	ele.innerHtml = innerHtml
+	ele.OuterHtml = open + innerHtml + tagEnd
+	ele.ref = ref
+
+	for strings.Contains(innerHtml,"<") && strings.Contains(innerHtml,"</"){
+		child := NewElementL(innerHtml)
+		existe := false
+		for _,v := range Dom{
+			if v == child{
+				existe = true
+				break
+			}
+		}
+		if !existe{
+			Dom = append(Dom, child)
+		}
+		ele.Children = append(ele.Children ,child)
+		child.ParentNode = ele
+		innerHtml = strings.Replace(innerHtml,child.OuterHtml,"",1)
+	}
+	return ele
+}
+func pushKey(s string ,  ref int )(res string){
+
+	if !strings.Contains(s ,"key"){
+		slice := strings.Split(s ,">")
+		for index , item := range slice{
+			if strings.Contains(item , "<") && !strings.Contains(item ,"</"){
+				slice[index] += fmt.Sprint(" key='",ref,"'") 
+				ref++
+			}
+			slice[index] += ">"
+		}
+		res =  strings.Join(slice,"")
+
+	}else{ res = s }
 	return 
 }
-func SelectorById(query string)(res *Element){
-	return Selector("#"+query)
-}
-func InnerToggle( a *Element , b *Element ){
-	c:= a.InnerHTML 
-	a.SetInnerHTML(b.InnerHTML) 
-	b.SetInnerHTML(c)
-}
-// parent
-type parent struct{
-	TagName string `json:"tagName"`
-	Id string `json:"id"`
-	Class string `json:"class"`
-}
-func (this *Element) GetParent()*parent{
-	var vParent parent
-	json.Unmarshal([]byte(this.ParentNode),&vParent)
-	return &vParent
-}
-func ( this *Element ) AppendChild( child *Element ){
-	this.InnerHTML += SelectorById(child.GetParent().Id).InnerHTML
-	fmt.Println(this.Id ,":",this.InnerHTML)
-	js := `{"type":"eval","js":"document.getElementById('`+ this.Id +`').appendChild(document.getElementById('`+ child.Id +`'))"}`
-	eval( js )
-}
-func ( this *Element ) GetFirstChild()*Element{
-	i := strings.LastIndex(this.InnerHTML,"id")
-	if i != -1{
-		str := strings.Split(this.InnerHTML[i:i+20],"=")[1]
-		str = strings.TrimSpace(strings.Split(strings.Replace(str,`"`,"",1),`"`)[0])
-		fmt.Println(str)
-		return SelectorById(str)
-	}else{
-		return &Element{}
-	}
-}
-func ( this *Element ) ChangeChild( ele *Element ){
-	childA := this.GetFirstChild()
-	childB := ele.GetFirstChild()
-	cloneA := childA
-	cloneB := childB
-	childB = cloneA
-	childA = cloneB
-	childInnerA := this.InnerHTML
-	childInnerB := ele.InnerHTML
-	this.InnerHTML = childInnerB
-	ele.InnerHTML = childInnerA
-	js := `{"type":"eval","js":"let childA = document.getElementById('`+this.Id+`').innerHTML;let childB = document.getElementById('`+ele.Id+`').innerHTML;document.getElementById('`+ele.Id+`').innerHTML = childA;document.getElementById('`+this.Id+`').innerHTML = childB;"}`
-	eval( js )
-}
-func ( this *Element ) SetInnerHTML( s interface{} )*Element{
-	this.InnerHTML = strings.TrimSpace(fmt.Sprint(s))
+func getAttribute( s string)[]string{
 
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').innerHTML ='`+ this.InnerHTML +`'"}`
-	eval ( js )
-	return this
-}
-func ( this *Element ) SetValue( s string )*Element{
-	this.Value = s
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').value ='`+ this.Value +`'"}`
-	eval ( js )
-	return this
-}
-func ( this *Element ) SetClassName( s string )*Element{
-	this.ClassName = s
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').className ='`+ this.ClassName +`'"}`
-	eval ( js )
-	js = `{"type":"eval","js":"document.querySelector('.`+ this.ClassName +`').classList.add('`+ this.Ref +`')"}`
-	eval( js )
-	return this
-}
-func ( this *Element ) SetId( s string )*Element{
-	this.Id = s
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').id ='`+ this.Id +`'"}`
-	eval ( js )
-	return this
-}
-func ( this *Element ) SetAttribute( s string , v string )*Element{
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').setAttribute('`+ s +`','`+ v +`')"}`
-	eval ( js )
-	return this
-}
-func ( this *Element ) AddEventListener( tipo string , name string , f func()){
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').addEventListener('`+ tipo +`',` + name + `)"}`
-	Bind( name , f )
-	eval( js )
-}
-func ( this *Element ) SetStyles( n string , v string ){
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').style.`+ n +`= '`+ v +`'"}`
-	eval( js )
-}
-func ( this *Element ) Remove(){
-	js := `{"type":"eval","js":"document.querySelector('.`+ this.Ref +`').remove()"}`
-	eval( js )
-}
-func ( this *Element ) Close( op string  , t float32 ){
+	var out bool = true
+	s = strings.TrimSpace(s)
+	chars := strings.Split(s,"")
 
-	var ani string
-	var keyframe bool = false
-	var js string
-	var f string
-
-	if op == "dispel"{
-		ani = `ele.style.opacity='0';`
-	}
-	if op == "rotate_x"{
-		ani = `ele.style.transform ='rotateX(90deg)';ele.style.opacity='0';`
-	}
-	if op == "rotate_y"{
-		ani = `ele.style.transform ='rotateY(90deg)';ele.style.opacity='0';`
-	}
-	if op == "rotate_z"{
-		ani = `ele.style.transform ='rotateZ(180deg)';ele.style.opacity = '0'`
-	}
-	if op == "boince"{
-		keyframe = true
-	}
-	if !keyframe{
-		f = `(()=>{let ele = document.querySelector('.`+ this.Ref +`');ele.style.transition = 'all `+ fmt.Sprint(t) +`s';`+ ani +`})()`
-		js = `{"type":"eval","js":"`+ f +`"}`
-	}else{
-		f = `document.querySelector('style').innerHTML += '`+ getBoince() +`';let ele = document.querySelector('.`+ this.Ref +`');ele.style.opacity = '0';ele.style.animation = 'bounceIn `+fmt.Sprint(t)  +`s reverse'`
-		js = `{"type":"eval","js":"`+ f +`"}`
-	}
-	eval( js )
-}
-func ( this *Element ) Open( op string  , t float32 ){
-
-	var ani string
-	var keyframe bool = false
-	var js string
-	var f string
-
-	if op == "dispel"{
-		ani = `ele.style.opacity='1';`
-	}
-	if op == "rotate_x"{
-		ani = `ele.style.transform ='rotateX(0)';ele.style.opacity='1';`
-	}
-	if op == "rotate_y"{
-		ani = `ele.style.transform ='rotateY(0)';ele.style.opacity='1';`
-	}
-	if op == "rotate_z"{
-		ani = `ele.style.transform ='rotateZ(0)';ele.style.opacity='1'`
-	}	
-	if op == "boince"{
-		keyframe = true
-	}
-	if !keyframe{
-		f = `(()=>{let ele = document.querySelector('.`+ this.Ref +`');ele.style.transition = 'all `+ fmt.Sprint(t) +`s';`+ ani +`})()`
-		js = `{"type":"eval","js":"`+ f +`"}`
-	}else{
-		f = `document.querySelector('style').innerHTML += '`+ getBoince() +`';let ele = document.querySelector('.`+ this.Ref +`');ele.style.opacity = '1';ele.style.animation = 'bounceIn `+ fmt.Sprint(t)  +`s'`
-		js = `{"type":"eval","js":"`+ f +`"}`
-	}
-	eval( js )
-}
-func ( this *Element ) ToggleAni( op string , t float32 ){
-	this.Close( op , t )
-	time.Sleep(1*time.Second)
-	this.Open( op , t )
-}
-// chrono
-type alarm struct{
-	minute int 
-	second int 
-}
-type chrono struct{
-	ele *Element
-	ala alarm
-	call func()
-}
-func ( this *Element ) IsChrono()( *chrono ){
-	var chr chrono
-	chr.ele = this
-	return &chr
-}
-func ( chr *chrono ) Run(  minute int , second int  ){
-	second ++
-	if minute > 60 { minute = 60 }
-	if second > 60 { second = 60 }
-	go func(){
-		for{
-			if second == chr.ala.second+1 && minute == chr.ala.minute{ chr.call() }
-			if second > 60 { second = 0 ; minute++ }
-	
-			time.Sleep(1*time.Second)
-	
-			if minute < 10 && second < 10 { 
-				chr.ele.SetInnerHTML(fmt.Sprint("0",minute,":","0",second))
-			}else if minute < 10 && second >= 10 { 
-				chr.ele.SetInnerHTML(fmt.Sprint("0",minute,":",second))
-			}else{ 
-				chr.ele.SetInnerHTML(fmt.Sprint(minute,":",second)) }
-			second++
+	for index , char := range chars {
+		if char == "'" { out = !out }
+		if char == " " && out {
+			chars[index] = ","
 		}
-
-	}()
-}
-func ( chr *chrono ) SetAlarm( minute int , second int , call func())*chrono{
-	chr.ala.minute = minute
-	chr.ala.second = second
-	chr.call = call
-	return chr
-}
-// contador 
-type counter struct{
-	ele *Element
-	Max int
-	Min int
-}
-func (this *Element) IsCounter()*counter{
-	cont := counter{
-		ele : this,
-		Max:1000000,
-		Min:-1000000,
 	}
-	return &cont 
+	s = strings.Join(chars, "")
+
+	return strings.Split(s,",")
 }
-func ( this *counter ) SetMax( max int)*counter {
-	this.Max = max
-	return this
-}
-func ( this *counter ) SetMin( min int )*counter{
-	this.Min = min
-	return this
-}
-func ( this *counter ) Increment(){
-	inner ,_:= strconv.Atoi(this.ele.InnerHTML)
-	if inner < this.Max{
-		this.ele.SetInnerHTML(inner + 1 )
+// selectors
+func Selector(q string)(ele *Element){
+
+	for _,v := range Dom{
+
+		if strings.Contains(q,"#"){
+			if v.Id == q[1:]{
+				ele = v 
+				break
+			}
+		}else
+		if strings.Contains(q ,"."){
+			if strings.Contains(v.ClassName,q[1:]){
+				ele = v
+				break
+			}
+		}else
+		if v.TagName == q {
+				ele = v
+				break
+		}else 
+		if strings.Contains(v.OuterHtml , q){
+			ele = v
+			break
+		}
 	}
+	if ele == nil { ele = &Element{innerHtml: "<nil>",OuterHtml: "<nil>"}}
+	return
 }
-func ( this *counter ) Decrement(){
-	inner,_:= strconv.Atoi(this.ele.InnerHTML)
-	if inner > this.Min{ 
-		this.ele.SetInnerHTML(inner - 1)
+func SelectorId(q string)(ele *Element){
+
+	for _,v := range Dom{
+		if v.Id == q { 
+			ele = v 
+			break
+		}
 	}
+	return
 }
-// event 
-func GetEvent()*Event{
-	return event
+func SelectorAll(q string)(ele []*Element){
+	for _,v := range Dom{
+
+		if strings.Contains(q,"#"){
+			if v.Id == q[1:]{
+				ele = append(ele,v) 
+			}
+		}else
+		if strings.Contains(q ,"."){
+			if strings.Contains(v.ClassName ,q[1:]){
+				ele = append(ele,v) 
+			}
+		}else
+		if v.TagName == q {
+			ele = append(ele,v) 
+		}else 
+		if strings.Contains(v.OuterHtml , q){
+			ele = append(ele,v) 
+		}
+	}
+	if ele == nil { ele =append(ele,&Element{innerHtml: "<nil>",OuterHtml: "<nil>"})}
+	return 
 }
-func DePrueba(){
-	
+// methods
+func (e *Element) Prueba(){
+	js := "console.log(document.querySelector(`[key='3']`))"
+	eval( `{"type":"eval","js":"`+ js +`"}` )
 }
+func (e *Element) GetRef()string{
+	return fmt.Sprint(e.ref)
+}
+func (e *Element) SetInnerHTML(html string) {
+	if e.TagName != "input"{
+		clouse := "</" + e.TagName + ">"
+		e.innerHtml = html
+		e.OuterHtml = strings.Replace(e.OuterHtml , clouse , html + clouse, 1)
+		js := "document.querySelector(`[key='"+ fmt.Sprint(e.ref) +"']`).innerHTML ='" + html + "'"
+		eval( `{"type":"eval","js":"`+ js +`"}` )	}
+}
+func (e *Element) GetInnerHTML() string {
+	if e.TagName != "input"{
+		return e.innerHtml
+	}
+	return ""
+}
+func (e *Element) Append(ele *Element) {
+	close := "</" + e.TagName + ">"
+	open := e.OuterHtml[:strings.Index(e.OuterHtml,">")+1]
+	e.Children = append(e.Children, ele)
+	e.innerHtml += ele.OuterHtml
+	e.OuterHtml = open + e.innerHtml + close
+	if ele.ParentNode != nil {
+		ele.Remove()
+	}
+	ele.ParentNode = e
+	js := "document.querySelector(`[key='"+e.GetRef()+"']`).appendChild(document.querySelector(`[key='"+ele.GetRef()+"']`))"
+	eval( `{"type":"eval","js":"`+ js +`"}` )
+}
+func (e *Element) Remove(){
+	p := e.ParentNode
+	p.innerHtml = strings.Replace(p.innerHtml,e.OuterHtml,"",1)
+	p.OuterHtml = strings.Replace(p.OuterHtml,e.OuterHtml,"",1)
 
+	for i ,v := range  p.Children{
+		if v == e{
+			p.Children = append(p.Children[:i],p.Children[i+1:]...)
+		}
+	}
+	p.uploadInners()
+}
+func (e *Element) SetAttribute( t string, v string ){
 
+	if t == "name"{
+		e.SetName(v)
+	}
+	if t == "className"{
+		e.SetClassName(v)
+	}
+	if t == "id"{
+		e.SetId(v)
+	}
+	if t == "value"{
+		e.Value = v
+	}
+	js := "document.querySelector(`[key='"+ e.GetRef() +"']`).setAttribute('"+ t +"','"+ v +"')"
+	eval(`{"type":"eval","js":"`+ js +`"}`)
+}
+func (e *Element) SetId(v string) {
+	e.Id = v 
+	e.OuterHtml = strings.Replace(e.OuterHtml,e.TagName , e.TagName + " id='" + v + "'",1)
+	js := "document.querySelector(`[key='"+ e.GetRef() +"']`).id = '"+ v +"'"
+	eval(`{"type":"eval","js":"`+ js +`"}`)
+}
+func (e *Element) SetClassName( v string ) {
+	e.ClassName = v
+	e.OuterHtml = strings.Replace(e.OuterHtml,e.TagName , e.TagName + " class='" + v + "'" ,1)
+	js := "document.querySelector(`[key='"+ e.GetRef() +"']`).className = '"+ v +"'"
+	eval(`{"type":"eval","js":"`+ js +`"}`)
+}
+func (e *Element) SetName( v string ) {
+	e.Name = v
+	e.OuterHtml = strings.Replace(e.OuterHtml,e.TagName , e.TagName + " name='" + v + "'" ,1)
+	js := "document.querySelector(`[key='"+ e.GetRef() +"']`).name = '"+ v +"'"
+	eval(`{"type":"eval","js":"`+ js +`"}`)
+}
+func (e *Element) SetValue(v string){
+	e.Value = v
+	js := "document.querySelector(`[key='"+ e.GetRef() +"']`).value = '"+ v +"'"
+	eval(`{"type":"eval","js":"`+ js +`"}`)
+}
+func (e *Element) AddEventListener(t string, n string , f func()){
+	Bind(n,f)
+	js := "document.querySelector(`[key='"+ e.GetRef()+"']`).addEventListener('"+ t +"',"+ n +")"
+	eval (`{"type":"eval","js":"`+ js +`"}`)
+}
+func (ev *Events) GetTarget()(ele *Element){
 
+	for i, e := range Dom{
+		res,_ := strconv.Atoi(ev.Ref)
+		if e.ref == res {
+			Dom[i].SetValue(ev.Value)
+			ele = e
+		}
+	}
+	if ele == nil { ele = &Element{}}
+	return
+}
+// styles
+func Styles( css string )string{
+	return css
+}
+// components
+func (e *Component) AddChilds(childs ...*Component){
+	AddChilds(childs...)
+}
+func (e *Component) SetName(n string){
+	e.name = n
+}
 
 
 
